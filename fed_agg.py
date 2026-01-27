@@ -129,81 +129,85 @@ def aggregate_models_ours(global_model, client_models, args):
 
     return global_model
 
-def aggregate_models_ours_vera(global_model, client_models, args):
+def aggregate_models_vera_fedex(global_model, client_models, args):
+    """
+    Federated VeRA aggregation with covariance (FedEx-style).
+    A and B are frozen and shared across clients.
+    """
 
-    global_model = (
-        global_model.to("cuda") if torch.cuda.is_available() else global_model
-    )
-    global_dict = global_model.state_dict()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    global_model = global_model.to(device)
+    global_sd = global_model.state_dict()
 
-    # Extract state dicts from client models
-    client_state_dicts = [cm.state_dict() for cm in client_models]
+    client_sds = [cm.state_dict() for cm in client_models]
+    num_clients = len(client_models)
 
-    # Aggregate classifier weights as before
-    for k in global_dict.keys():
+    # 1. Aggregate classifier (standard FedAvg)
+    for k in global_sd:
         if "classifier" in k:
-            global_dict[k] = torch.stack(
-                [client_sd.get(k, global_dict[k]).float() for client_sd in client_state_dicts], 0
-            ).mean(0)
+            global_sd[k] = torch.stack(
+                [csd[k].float() for csd in client_sds], dim=0
+            ).mean(dim=0)
 
-    # Update each client's classifier weights to the aggregated value
-    for cm, client_sd in zip(client_models, client_state_dicts):
-        for k in global_dict.keys():
-            if "classifier" in k:
-                client_sd[k] = global_dict[k]
-        cm.load_state_dict(client_sd)
-
-    # VeRA aggregation using vera_lambda_b and vera_lambda_d (diagonal matrices)
+    # 2. VeRA aggregation + covariance error
     for name, module in global_model.named_modules():
-        if hasattr(module, "vera_A") and hasattr(module, "vera_B"):
-            vera_A_key = name + ".vera_A.default.weight"
-            vera_B_key = name + ".vera_B.default.weight"
-            vera_lambda_b_key = name + ".vera_lambda_b.default.weight"
-            vera_lambda_d_key = name + ".vera_lambda_d.default.weight"
-            base_layer_key = name + ".base_layer.weight"
+        if not (
+            hasattr(module, "vera_A")
+            and hasattr(module, "vera_B")
+            and hasattr(module, "vera_lambda_b")
+            and hasattr(module, "vera_lambda_d")
+        ):
+            continue
 
-            vera_A = global_dict.get(vera_A_key, None)
-            vera_B = global_dict.get(vera_B_key, None)
-            if vera_A is None or vera_B is None:
-                continue
+        A_key = name + ".vera_A.default.weight"
+        B_key = name + ".vera_B.default.weight"
+        lb_key = name + ".vera_lambda_b.default.weight"
+        ld_key = name + ".vera_lambda_d.default.weight"
 
-            # Collect lambda_b and lambda_d diagonal matrices from clients
-            lambda_b_matrices = []
-            lambda_d_matrices = []
-            for client_sd in client_state_dicts:
-                if vera_lambda_b_key in client_sd and vera_lambda_d_key in client_sd:
-                    lambda_b_matrices.append(client_sd[vera_lambda_b_key].detach())
-                    lambda_d_matrices.append(client_sd[vera_lambda_d_key].detach())
+        A = global_sd[A_key]   # frozen
+        B = global_sd[B_key]   # frozen
 
-            if len(lambda_b_matrices) == 0 or len(lambda_d_matrices) == 0:
-                raise ValueError(f"No client models have {vera_lambda_b_key} or {vera_lambda_d_key} for aggregation.")
+        lambda_bs = [csd[lb_key] for csd in client_sds]
+        lambda_ds = [csd[ld_key] for csd in client_sds]
 
-            lambda_b_avg = torch.stack(lambda_b_matrices).mean(0)
-            lambda_d_avg = torch.stack(lambda_d_matrices).mean(0)
+        # ---- averages ----
+        lambda_b_avg = torch.stack(lambda_bs).mean(dim=0)
+        lambda_d_avg = torch.stack(lambda_ds).mean(dim=0)
 
-            # Compute VeRA update: M = vera_B @ lambda_b_avg + vera_A @ lambda_d_avg
-            M = vera_B @ lambda_b_avg + vera_A @ lambda_d_avg
+        # ---- average of full VeRA updates ----
+        deltaW_avg_direct = sum(
+            lambda_bs[i] @ B @ lambda_ds[i] @ A
+            for i in range(num_clients)
+        ) / num_clients
 
-            scaling_factor = (
-                args.lora_alpha / np.sqrt(args.r)
-                if hasattr(args, "rslora") and args.rslora
-                else args.lora_alpha / args.r
-            )
+        # ---- VeRA update from averaged parameters ----
+        deltaW_from_avg = lambda_b_avg @ B @ lambda_d_avg @ A
 
-            if base_layer_key in global_dict:
-                global_dict[base_layer_key] += torch.transpose(M * scaling_factor, 1, 0)
+        # ---- covariance (FedEx-style) error ----
+        covariance_error = deltaW_avg_direct - deltaW_from_avg
 
-            # Optionally, update global lambda_b and lambda_d to aggregated values
-            global_dict[vera_lambda_b_key] = lambda_b_avg
-            global_dict[vera_lambda_d_key] = lambda_d_avg
+        # 3. Store / use the error
+        # (A) Log it
+        if hasattr(args, "log_covariance") and args.log_covariance:
+            err_norm = torch.norm(covariance_error, p="fro").item()
+            print(f"[VeRA-FedEx] {name} covariance error: {err_norm:.6f}")
 
-            # Optionally, update each client's lambda_b and lambda_d to aggregated values
-            for cm, client_sd in zip(client_models, client_state_dicts):
-                if vera_lambda_b_key in client_sd:
-                    client_sd[vera_lambda_b_key] = lambda_b_avg
-                if vera_lambda_d_key in client_sd:
-                    client_sd[vera_lambda_d_key] = lambda_d_avg
-                cm.load_state_dict(client_sd)
+        # (B) Optional FedEx-style correction
+        if hasattr(args, "fedex") and args.fedex:
+            # project error back into base weight space
+            base_key = name + ".base_layer.weight"
+            if base_key in global_sd:
+                global_sd[base_key] += args.fedex_lr * covariance_error
 
-    global_model.load_state_dict(global_dict)
+        # 4. Update global lambdas (canonical VeRA-FL)
+        global_sd[lb_key] = lambda_b_avg
+        global_sd[ld_key] = lambda_d_avg
+
+        # push back to clients
+        for cm, csd in zip(client_models, client_sds):
+            csd[lb_key] = lambda_b_avg
+            csd[ld_key] = lambda_d_avg
+            cm.load_state_dict(csd, strict=False)
+
+    global_model.load_state_dict(global_sd, strict=False)
     return global_model
