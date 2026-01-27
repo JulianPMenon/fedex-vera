@@ -64,7 +64,7 @@ parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
 args = parser.parse_args()
 
-wandb.init(project="project_name", config=args)
+#wandb.init(project="project_name", config=args)
 
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
