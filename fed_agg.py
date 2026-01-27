@@ -112,9 +112,9 @@ def aggregate_models_ours(global_model, client_models, args):
             lora_B_avg = lora_B_weights.mean(0)
 
             scaling_factor = (
-                args.lora_alpha / np.sqrt(args.lora_r)
+                args.lora_alpha / np.sqrt(args.r)
                 if args.rslora
-                else args.lora_alpha / args.lora_r
+                else args.lora_alpha / args.r
             )
 
             residue = M - lora_B_avg @ lora_A_avg
@@ -185,9 +185,9 @@ def aggregate_models_ours_vera(global_model, client_models, args):
             M = vera_B @ lambda_b_avg + vera_A @ lambda_d_avg
 
             scaling_factor = (
-                args.lora_alpha / np.sqrt(args.lora_r)
+                args.lora_alpha / np.sqrt(args.r)
                 if hasattr(args, "rslora") and args.rslora
-                else args.lora_alpha / args.lora_r
+                else args.lora_alpha / args.r
             )
 
             if base_layer_key in global_dict:
