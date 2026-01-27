@@ -1,0 +1,60 @@
+Downloading readme: 35.3kB [00:00, 17.7MB/s]
+Downloading data: 100%|████████████████████████████████████| 251k/251k [00:00<00:00, 281kB/s]
+Downloading data: 100%|██████████████████████████████████| 37.6k/37.6k [00:00<00:00, 123kB/s]
+Downloading data: 100%|█████████████████████████████████| 37.7k/37.7k [00:01<00:00, 21.6kB/s]
+Generating train split: 100%|█████████████████| 8551/8551 [00:00<00:00, 217382.44 examples/s]
+Generating validation split: 100%|████████████| 1043/1043 [00:00<00:00, 258534.31 examples/s]
+Generating test split: 100%|██████████████████| 1063/1063 [00:00<00:00, 435064.91 examples/s]
+tokenizer_config.json: 100%|██████████████████████████████| 25.0/25.0 [00:00<00:00, 52.5kB/s]
+vocab.json: 100%|█████████████████████████████████████████| 899k/899k [00:00<00:00, 2.39MB/s]
+merges.txt: 100%|█████████████████████████████████████████| 456k/456k [00:00<00:00, 4.79MB/s]
+tokenizer.json: 100%|███████████████████████████████████| 1.36M/1.36M [00:00<00:00, 10.9MB/s]
+config.json: 100%|███████████████████████████████████████████| 481/481 [00:00<00:00, 569kB/s]
+C:\Users\jujuj\anaconda3\envs\fedex-lora\lib\site-packages\transformers\tokenization_utils_base.py:1601: FutureWarning: `clean_up_tokenization_spaces` was not set. It will be set to `True` by default. This behavior will be depracted in transformers v4.45, and will be then set to `False` by default. For more details check this issue: https://github.com/huggingface/transformers/issues/31884
+  warnings.warn(
+Map: 100%|██████████████████████████████████████| 8551/8551 [00:02<00:00, 2868.88 examples/s]
+Map: 100%|██████████████████████████████████████| 1043/1043 [00:00<00:00, 3822.52 examples/s]
+Map: 100%|██████████████████████████████████████| 1063/1063 [00:00<00:00, 2644.24 examples/s]
+Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back to regular HTTP download. For better performance, install the package with: `pip install huggingface_hub[hf_xet]` or `pip install hf_xet`
+01/26/2026 17:41:59:WARNING:Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back to regular HTTP download. For better performance, install the package with: `pip install huggingface_hub[hf_xet]` or `pip install hf_xet`
+model.safetensors: 100%|██████████████████████████████████| 499M/499M [00:43<00:00, 11.6MB/s]
+Some weights of RobertaForSequenceClassification were not initialized from the model checkpoint at roberta-base and are newly initialized: ['classifier.dense.bias', 'classifier.dense.weight', 'classifier.out_proj.bias', 'classifier.out_proj.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Some weights of RobertaForSequenceClassification were not initialized from the model checkpoint at roberta-base and are newly initialized: ['classifier.dense.bias', 'classifier.dense.weight', 'classifier.out_proj.bias', 'classifier.out_proj.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Some weights of RobertaForSequenceClassification were not initialized from the model checkpoint at roberta-base and are newly initialized: ['classifier.dense.bias', 'classifier.dense.weight', 'classifier.out_proj.bias', 'classifier.out_proj.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Some weights of RobertaForSequenceClassification were not initialized from the model checkpoint at roberta-base and are newly initialized: ['classifier.dense.bias', 'classifier.dense.weight', 'classifier.out_proj.bias', 'classifier.out_proj.weight']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+Round 1/2
+D:\IML\fedex-lora\train_eval.py:56: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler()
+C:\Users\jujuj\anaconda3\envs\fedex-lora\lib\site-packages\torch\cuda\amp\grad_scaler.py:31: UserWarning: torch.cuda.amp.GradScaler is enabled, but CUDA is not available.  Disabling.
+  super().__init__(
+  0%|                                                                 | 0/23 [00:00<?, ?it/s]D:\IML\fedex-lora\train_eval.py:63: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with autocast():
+C:\Users\jujuj\anaconda3\envs\fedex-lora\lib\site-packages\torch\cuda\amp\autocast_mode.py:54: UserWarning: CUDA is not available or torch_xla is imported. Disabling autocast.
+  super().__init__(
+100%|███████████████████████████████████████████████████████| 23/23 [43:52<00:00, 114.46s/it]
+100%|███████████████████████████████████████████████████████| 23/23 [43:58<00:00, 114.71s/it]
+100%|███████████████████████████████████████████████████████| 22/22 [43:19<00:00, 118.18s/it]
+cola - Eval Loss: 0.9115, Metric 1: 0.6913
+cola - Metric 2: 0.0000
+cola - Max Metric 1: 0.6913
+cola - Max Metric 2: 0.0000
+Round 2/2
+D:\IML\fedex-lora\train_eval.py:56: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = GradScaler()
+C:\Users\jujuj\anaconda3\envs\fedex-lora\lib\site-packages\torch\cuda\amp\grad_scaler.py:31: UserWarning: torch.cuda.amp.GradScaler is enabled, but CUDA is not available.  Disabling.
+  super().__init__(
+  0%|                                                                 | 0/23 [00:00<?, ?it/s]D:\IML\fedex-lora\train_eval.py:63: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with autocast():
+C:\Users\jujuj\anaconda3\envs\fedex-lora\lib\site-packages\torch\cuda\amp\autocast_mode.py:54: UserWarning: CUDA is not available or torch_xla is imported. Disabling autocast.
+  super().__init__(
+100%|███████████████████████████████████████████████████████| 23/23 [44:56<00:00, 117.22s/it]
+100%|███████████████████████████████████████████████████████| 23/23 [41:43<00:00, 108.86s/it]
+100%|███████████████████████████████████████████████████████| 22/22 [48:08<00:00, 131.29s/it]
+cola - Eval Loss: 0.6022, Metric 1: 0.6913
+cola - Metric 2: 0.0000
+cola - Max Metric 1: 0.6913
+cola - Max Metric 2: 0.0000
