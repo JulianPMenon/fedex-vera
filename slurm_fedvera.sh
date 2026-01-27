@@ -7,15 +7,14 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=12G
 #SBATCH --time=02:00:00
-
+#SBATCH --mail-type=END 
 
 # Activate conda environment
 module load python/3.10
-module load anaconda
+module load conda
 
-conda create -n fed_vera python=3.10
 conda activate fed_vera  
-pip install -r requirements.txt
+
 
 
 # Set the client id based on SLURM_ARRAY_TASK_ID
