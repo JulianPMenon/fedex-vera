@@ -18,9 +18,9 @@ from peft import get_peft_model, LoraConfig, TaskType, VeraConfig
 def load_and_preprocess_data(task):
 
     if "mnli" in task:
-        dataset = load_dataset("glue", "mnli")
+        dataset = load_dataset("data/glue", "mnli")
     else:
-        dataset = load_dataset("glue", task)
+        dataset = load_dataset("data/glue", task)
 
     tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
 
