@@ -132,26 +132,38 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     global_model = global_model.to(device)
-    global_dict = global_model.state_dict()
 
     num_clients = len(client_models)
 
+    # Collect state_dicts once (IMPORTANT)
+    client_states = [m.state_dict() for m in client_models]
+    global_state = global_model.state_dict()
 
-    # 1. Aggregate classifier (unchanged)
+    # --------------------------------------------------
+    # 1. Aggregate classifier
+    # --------------------------------------------------
 
-    for k in global_dict.keys():
+    for k in global_state.keys():
         if "classifier" in k:
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(num_clients)], 0
+            global_state[k] = torch.stack(
+                [client_states[i][k].float() for i in range(num_clients)],
+                dim=0
             ).mean(0)
 
-    for client_model in client_models:
-        for k in global_dict.keys():
-            if "classifier" in k:
-                client_model[k] = global_dict[k]
+    # Load into global model
+    global_model.load_state_dict(global_state, strict=False)
 
- 
+    # Sync classifier back to clients
+    for client_model in client_models:
+        client_sd = client_model.state_dict()
+        for k in global_state.keys():
+            if "classifier" in k:
+                client_sd[k] = global_state[k].clone()
+        client_model.load_state_dict(client_sd, strict=False)
+
+    # --------------------------------------------------
     # 2. VeRA FedEx-style aggregation
+    # --------------------------------------------------
 
     for name, module in global_model.named_modules():
 
@@ -162,49 +174,61 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             and hasattr(module, "vera_lambda_d")
         ):
 
-            A_key  = name + ".vera_A.default.weight"
-            B_key  = name + ".vera_B.default.weight"
-            lb_key = name + ".vera_lambda_b.default.weight"
-            ld_key = name + ".vera_lambda_d.default.weight"
-            base_key = name + ".base_layer.weight"
+            A_key  = f"{name}.vera_A.default.weight"
+            B_key  = f"{name}.vera_B.default.weight"
+            lb_key = f"{name}.vera_lambda_b.default.weight"
+            ld_key = f"{name}.vera_lambda_d.default.weight"
+            base_key = f"{name}.base_layer.weight"
 
-            # frozen, shared
-            A = global_dict[A_key]
-            B = global_dict[B_key]
+            # Frozen, shared matrices
+            A = global_state[A_key]
+            B = global_state[B_key]
 
+            # Client-specific lambdas
             lambda_bs = torch.stack(
-                [client_models[i][lb_key].detach() for i in range(num_clients)]
+                [client_states[i][lb_key].detach() for i in range(num_clients)],
+                dim=0
             )
             lambda_ds = torch.stack(
-                [client_models[i][ld_key].detach() for i in range(num_clients)]
+                [client_states[i][ld_key].detach() for i in range(num_clients)],
+                dim=0
             )
 
+            # --------------------------------------------------
             # FedEx core
+            # --------------------------------------------------
 
-            # M = average of full client updates
+            # M = average full client updates
             M = sum(
                 lambda_bs[i] @ B @ lambda_ds[i] @ A
                 for i in range(num_clients)
             ) / num_clients
 
-            # averaged parameters
+            # Averaged parameters
             lambda_b_avg = lambda_bs.mean(0)
             lambda_d_avg = lambda_ds.mean(0)
 
-            # VeRA update from averaged params
+            # Update from averaged params
             vera_avg_update = lambda_b_avg @ B @ lambda_d_avg @ A
 
-            # covariance (FedEx) residue
+            # FedEx covariance residue
             residue = M - vera_avg_update
 
+            # --------------------------------------------------
             # Apply updates
+            # --------------------------------------------------
 
-            global_dict[lb_key] = lambda_b_avg
-            global_dict[ld_key] = lambda_d_avg
+            global_state[lb_key] = lambda_b_avg
+            global_state[ld_key] = lambda_d_avg
 
-            if hasattr(args, "fedex") and args.fedex:
-                global_dict[base_key] += args.fedex_lr * residue
+            if getattr(args, "fedex", False):
+                global_state[base_key] += args.fedex_lr * residue
 
-    global_model.load_state_dict(global_dict)
+    # --------------------------------------------------
+    # 3. Load final global model
+    # --------------------------------------------------
+
+    global_model.load_state_dict(global_state, strict=False)
+
     return global_model
 
