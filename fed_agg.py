@@ -1,170 +1,148 @@
 import torch
-from torch.utils.data import DataLoader
-from transformers import (
-    RobertaTokenizer,
-    RobertaForSequenceClassification,
-    AdamW,
-    get_linear_schedule_with_warmup,
-)
-from datasets import load_dataset
-from tqdm import tqdm
 import numpy as np
-from peft import get_peft_model, LoraConfig, TaskType, VeraConfig
-from data_utils import *
-from models import *
-from sklearn.metrics import matthews_corrcoef
-import numpy as np
-import torch.nn as nn
 
+
+# --------------------------------------------------
+# Helper
+# --------------------------------------------------
+
+def _get_state_dicts(client_models):
+    return [m.state_dict() for m in client_models]
+
+
+# --------------------------------------------------
+# 1. Normal aggregation (LoRA + VeRA + classifier)
+# --------------------------------------------------
 
 def aggregate_models_normal(global_model, client_models):
 
-    global_dict = global_model.state_dict()
-    for k in global_dict.keys():
-        if "lora" in k:  # Only aggregate LoRA parameters
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
-            ).mean(0)
+    global_state = global_model.state_dict()
+    client_states = _get_state_dicts(client_models)
+    num_clients = len(client_models)
 
-        if "vera" in k:  # Only aggregate Vera parameters
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
-            ).mean(0)
+    for k in global_state.keys():
+        if (
+            "lora" in k
+            or "vera_lambda" in k
+            or "classifier" in k
+        ):
+            if all(k in cs for cs in client_states):
+                global_state[k] = torch.stack(
+                    [cs[k].float() for cs in client_states],
+                    dim=0
+                ).mean(0)
 
-        if "classifier" in k:
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
-            ).mean(0)
-
-    global_model.load_state_dict(global_dict)
-
+    global_model.load_state_dict(global_state, strict=False)
     return global_model
 
-    
 
+# --------------------------------------------------
+# 2. FFA aggregation (LoRA-B / VeRA-b only)
+# --------------------------------------------------
 
 def aggregate_models_ffa(global_model, client_models):
 
-    global_dict = global_model.state_dict()
-    for k in global_dict.keys():
-        if "lora_B" in k:  # Only aggregate LoRA B parameters
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
-            ).mean(0)
+    global_state = global_model.state_dict()
+    client_states = _get_state_dicts(client_models)
+    num_clients = len(client_models)
 
-        if "vera_b" in k: # Only aggregate Vera b parameters
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
-            ).mean(0)
+    for k in global_state.keys():
+        if (
+            "lora_B" in k
+            or "vera_lambda_b" in k
+            or "classifier" in k
+        ):
+            if all(k in cs for cs in client_states):
+                global_state[k] = torch.stack(
+                    [cs[k].float() for cs in client_states],
+                    dim=0
+                ).mean(0)
 
-        if "classifier" in k:
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
-            ).mean(0)
-
-    global_model.load_state_dict(global_dict)
-
+    global_model.load_state_dict(global_state, strict=False)
     return global_model
 
 
+# --------------------------------------------------
+# 3. Our LoRA aggregation (FedAvg + residue)
+# --------------------------------------------------
+
 def aggregate_models_ours(global_model, client_models, args):
 
-    global_model = (
-        global_model.to("cuda") if torch.cuda.is_available() else global_model
-    )
-    global_dict = global_model.state_dict()
-    for k in global_dict.keys():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    global_model = global_model.to(device)
 
-        if "classifier" in k:
-            global_dict[k] = torch.stack(
-                [client_models[i][k].float() for i in range(len(client_models))], 0
+    global_state = global_model.state_dict()
+    client_states = _get_state_dicts(client_models)
+    num_clients = len(client_models)
+
+    # ---- classifier ----
+    for k in global_state.keys():
+        if "classifier" in k and all(k in cs for cs in client_states):
+            global_state[k] = torch.stack(
+                [cs[k].float() for cs in client_states],
+                dim=0
             ).mean(0)
 
-    for client_model in client_models:
-
-        for k in global_dict.keys():
-
-            if "classifier" in k:
-                client_model[k] = global_dict[k]
-
+    # ---- LoRA FedEx-style ----
     for name, module in global_model.named_modules():
 
         if hasattr(module, "lora_A") and hasattr(module, "lora_B"):
 
-            lora_A_keys = name + ".lora_A.default.weight"
-            lora_B_keys = name + ".lora_B.default.weight"
-            base_layer_keys = name + ".base_layer.weight"
+            A_key = f"{name}.lora_A.default.weight"
+            B_key = f"{name}.lora_B.default.weight"
+            base_key = f"{name}.base_layer.weight"
 
-            lora_A_weights = torch.stack(
-                [client_model[lora_A_keys].detach() for client_model in client_models]
-            )
-            lora_B_weights = torch.stack(
-                [client_model[lora_B_keys].detach() for client_model in client_models]
-            )
+            if not all(
+                A_key in cs and B_key in cs for cs in client_states
+            ):
+                continue
 
-            # M shape: (d, k)
-            M = sum(
-                lora_B_weights[i] @ lora_A_weights[i] for i in range(len(client_models))
-            ) / len(client_models)
+            A_ws = torch.stack([cs[A_key] for cs in client_states]).to(device)
+            B_ws = torch.stack([cs[B_key] for cs in client_states]).to(device)
 
-            lora_A_avg = lora_A_weights.mean(0)
-            lora_B_avg = lora_B_weights.mean(0)
+            M = sum(B_ws[i] @ A_ws[i] for i in range(num_clients)) / num_clients
 
-            scaling_factor = (
+            A_avg = A_ws.mean(0)
+            B_avg = B_ws.mean(0)
+
+            scaling = (
                 args.lora_alpha / np.sqrt(args.r)
-                if args.rslora
+                if getattr(args, "rslora", False)
                 else args.lora_alpha / args.r
             )
 
-            residue = M - lora_B_avg @ lora_A_avg
+            residue = M - (B_avg @ A_avg)
 
-            global_dict[name + ".lora_A.default.weight"] = lora_A_avg
-            global_dict[name + ".lora_B.default.weight"] = lora_B_avg
-            global_dict[name + ".base_layer.weight"] += torch.transpose(
-                residue * scaling_factor, 1, 0
-            )
-            
-    global_model.load_state_dict(global_dict)
+            global_state[A_key] = A_avg
+            global_state[B_key] = B_avg
+            global_state[base_key] += residue.T * scaling
 
+    global_model.load_state_dict(global_state, strict=False)
     return global_model
+
+
+# --------------------------------------------------
+# 4. VeRA + FedEx (FULLY FIXED)
+# --------------------------------------------------
 
 def aggregate_models_ours_vera_fedex(global_model, client_models, args):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     global_model = global_model.to(device)
 
+    global_state = global_model.state_dict()
+    client_states = _get_state_dicts(client_models)
     num_clients = len(client_models)
 
-    # Collect state_dicts once (IMPORTANT)
-    client_states = [m.state_dict() for m in client_models]
-    global_state = global_model.state_dict()
-
-    # --------------------------------------------------
-    # 1. Aggregate classifier
-    # --------------------------------------------------
-
+    # ---- classifier ----
     for k in global_state.keys():
-        if "classifier" in k:
+        if "classifier" in k and all(k in cs for cs in client_states):
             global_state[k] = torch.stack(
-                [client_states[i][k].float() for i in range(num_clients)],
+                [cs[k].float() for cs in client_states],
                 dim=0
             ).mean(0)
 
-    # Load into global model
-    global_model.load_state_dict(global_state, strict=False)
-
-    # Sync classifier back to clients
-    for client_model in client_models:
-        client_sd = client_model.state_dict()
-        for k in global_state.keys():
-            if "classifier" in k:
-                client_sd[k] = global_state[k].clone()
-        client_model.load_state_dict(client_sd, strict=False)
-
-    # --------------------------------------------------
-    # 2. VeRA FedEx-style aggregation
-    # --------------------------------------------------
-
+    # ---- VeRA FedEx ----
     for name, module in global_model.named_modules():
 
         if (
@@ -178,21 +156,25 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             ld_key = f"{name}.vera_lambda_d.default.weight"
             base_key = f"{name}.base_layer.weight"
 
-            # ---- FIXED GUARD (this is the missing fix) ----
-            if not all(lb_key in cs and ld_key in cs for cs in client_states):
+            # critical: all clients must have these
+            if not all(
+                lb_key in cs and ld_key in cs for cs in client_states
+            ):
                 continue
 
+            # frozen shared matrices
             A = module.vera_A.default
             B = module.vera_B.default
 
             lambda_bs = torch.stack(
                 [cs[lb_key].detach() for cs in client_states]
-            ).to(A.device)
+            ).to(device)
 
             lambda_ds = torch.stack(
                 [cs[ld_key].detach() for cs in client_states]
-            ).to(A.device)
+            ).to(device)
 
+            # FedEx core
             M = sum(
                 lambda_bs[i] @ B @ lambda_ds[i] @ A
                 for i in range(num_clients)
@@ -209,13 +191,5 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             if getattr(args, "fedex", False):
                 global_state[base_key] += args.fedex_lr * residue
 
-
-
-    # --------------------------------------------------
-    # 3. Load final global model
-    # --------------------------------------------------
-
     global_model.load_state_dict(global_state, strict=False)
-
     return global_model
-
