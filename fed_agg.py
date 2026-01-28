@@ -178,26 +178,21 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             ld_key = f"{name}.vera_lambda_d.default.weight"
             base_key = f"{name}.base_layer.weight"
 
-            # ---- safety guard ----
-            if lb_key not in client_states[0] or ld_key not in client_states[0]:
+            # ---- FIXED GUARD (this is the missing fix) ----
+            if not all(lb_key in cs and ld_key in cs for cs in client_states):
                 continue
 
-            # Frozen, shared matrices (VeRA-style)
             A = module.vera_A.default
             B = module.vera_B.default
 
-            # Client-specific lambdas
             lambda_bs = torch.stack(
-                [client_states[i][lb_key].detach() for i in range(num_clients)],
-                dim=0
+                [cs[lb_key].detach() for cs in client_states]
             ).to(A.device)
 
             lambda_ds = torch.stack(
-                [client_states[i][ld_key].detach() for i in range(num_clients)],
-                dim=0
+                [cs[ld_key].detach() for cs in client_states]
             ).to(A.device)
 
-            # ---- FedEx core ----
             M = sum(
                 lambda_bs[i] @ B @ lambda_ds[i] @ A
                 for i in range(num_clients)
@@ -206,15 +201,14 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             lambda_b_avg = lambda_bs.mean(0)
             lambda_d_avg = lambda_ds.mean(0)
 
-            vera_avg_update = lambda_b_avg @ B @ lambda_d_avg @ A
-            residue = M - vera_avg_update
+            residue = M - (lambda_b_avg @ B @ lambda_d_avg @ A)
 
-            # ---- apply updates ----
             global_state[lb_key] = lambda_b_avg
             global_state[ld_key] = lambda_d_avg
 
             if getattr(args, "fedex", False):
                 global_state[base_key] += args.fedex_lr * residue
+
 
 
     # --------------------------------------------------
