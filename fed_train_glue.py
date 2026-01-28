@@ -117,7 +117,7 @@ def federated_learning(task):
         elif args.agg_type == "ours":
             global_model = aggregate_models_ours(global_model, client_models, args)
         elif args.agg_type == "ours_vera":
-            global_model = aggregate_models_ours_vera(global_model, client_models, args)
+            global_model = aggregate_models_ours_vera_fedex(global_model, client_models, args)
         elif args.agg_type == "ffa":
             global_model = aggregate_models_ffa(global_model, client_models)
 
