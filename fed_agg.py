@@ -174,56 +174,48 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             and hasattr(module, "vera_lambda_d")
         ):
 
-            A_key  = f"{name}.vera_A.default"
-            B_key  = f"{name}.vera_B.default"
             lb_key = f"{name}.vera_lambda_b.default.weight"
             ld_key = f"{name}.vera_lambda_d.default.weight"
             base_key = f"{name}.base_layer.weight"
 
-            # Frozen, shared matrices
+            # ---- safety guard ----
+            if lb_key not in client_states[0] or ld_key not in client_states[0]:
+                continue
+
+            # Frozen, shared matrices (VeRA-style)
             A = module.vera_A.default
             B = module.vera_B.default
-
 
             # Client-specific lambdas
             lambda_bs = torch.stack(
                 [client_states[i][lb_key].detach() for i in range(num_clients)],
                 dim=0
-            )
+            ).to(A.device)
+
             lambda_ds = torch.stack(
                 [client_states[i][ld_key].detach() for i in range(num_clients)],
                 dim=0
-            )
+            ).to(A.device)
 
-            # --------------------------------------------------
-            # FedEx core
-            # --------------------------------------------------
-
-            # M = average full client updates
+            # ---- FedEx core ----
             M = sum(
                 lambda_bs[i] @ B @ lambda_ds[i] @ A
                 for i in range(num_clients)
             ) / num_clients
 
-            # Averaged parameters
             lambda_b_avg = lambda_bs.mean(0)
             lambda_d_avg = lambda_ds.mean(0)
 
-            # Update from averaged params
             vera_avg_update = lambda_b_avg @ B @ lambda_d_avg @ A
-
-            # FedEx covariance residue
             residue = M - vera_avg_update
 
-            # --------------------------------------------------
-            # Apply updates
-            # --------------------------------------------------
-
+            # ---- apply updates ----
             global_state[lb_key] = lambda_b_avg
             global_state[ld_key] = lambda_d_avg
 
             if getattr(args, "fedex", False):
                 global_state[base_key] += args.fedex_lr * residue
+
 
     # --------------------------------------------------
     # 3. Load final global model
