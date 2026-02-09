@@ -152,8 +152,13 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             and hasattr(module, "vera_lambda_d")
         ):
 
-            lb_key = f"{name}.vera_lambda_b.default.weight"
-            ld_key = f"{name}.vera_lambda_d.default.weight"
+            # PEFT may store VeRA lambdas with or without the `.default` suffix.
+            lb_key = f"{name}.vera_lambda_b.weight"
+            ld_key = f"{name}.vera_lambda_d.weight"
+            if lb_key not in global_state:
+                lb_key = f"{name}.vera_lambda_b.default.weight"
+            if ld_key not in global_state:
+                ld_key = f"{name}.vera_lambda_d.default.weight"
             base_key = f"{name}.base_layer.weight"
 
             # critical: all clients must have these

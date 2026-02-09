@@ -91,6 +91,11 @@ def federated_learning(task):
     else:
         global_model = create_peft_model(num_labels, args)
 
+    if args.vera and args.agg_type == "ours_vera":
+        vera_keys = [k for k in global_model.state_dict().keys() if "vera_lambda" in k]
+        print("VeRA lambda keys sample:", vera_keys[:4])
+        print("VeRA lambda key count:", len(vera_keys))
+
     client_models = []
 
     for i in range(args.num_clients):
