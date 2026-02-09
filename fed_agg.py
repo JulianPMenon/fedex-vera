@@ -190,18 +190,18 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
                     return torch.diag(tensor)
                 return tensor
 
-            lambda_bs = [cs[lb_key].detach() for cs in client_states]
-            lambda_ds = [cs[ld_key].detach() for cs in client_states]
+            lambda_bs_raw = [cs[lb_key].detach() for cs in client_states]
+            lambda_ds_raw = [cs[ld_key].detach() for cs in client_states]
 
             b_size = B.shape[0]
             d_size = B.shape[1]
 
             lambda_bs = torch.stack(
-                [_as_diag_matrix(lb, b_size) for lb in lambda_bs]
+                [_as_diag_matrix(lb, b_size) for lb in lambda_bs_raw]
             ).to(device)
 
             lambda_ds = torch.stack(
-                [_as_diag_matrix(ld, d_size) for ld in lambda_ds]
+                [_as_diag_matrix(ld, d_size) for ld in lambda_ds_raw]
             ).to(device)
 
             # FedEx core
@@ -210,8 +210,8 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
                 for i in range(num_clients)
             ) / num_clients
 
-            lambda_b_avg = lambda_bs.mean(0)
-            lambda_d_avg = lambda_ds.mean(0)
+            lambda_b_avg = torch.stack(lambda_bs_raw).mean(0)
+            lambda_d_avg = torch.stack(lambda_ds_raw).mean(0)
 
             residue = M - (lambda_b_avg @ B @ lambda_d_avg @ A)
 
