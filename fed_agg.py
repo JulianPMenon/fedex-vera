@@ -183,12 +183,25 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             A = module.vera_A.default
             B = module.vera_B.default
 
+            def _as_diag_matrix(tensor, size):
+                if tensor.dim() == 0:
+                    return torch.eye(size, device=device, dtype=tensor.dtype) * tensor
+                if tensor.dim() == 1:
+                    return torch.diag(tensor)
+                return tensor
+
+            lambda_bs = [cs[lb_key].detach() for cs in client_states]
+            lambda_ds = [cs[ld_key].detach() for cs in client_states]
+
+            b_size = B.shape[0]
+            d_size = B.shape[1]
+
             lambda_bs = torch.stack(
-                [cs[lb_key].detach() for cs in client_states]
+                [_as_diag_matrix(lb, b_size) for lb in lambda_bs]
             ).to(device)
 
             lambda_ds = torch.stack(
-                [cs[ld_key].detach() for cs in client_states]
+                [_as_diag_matrix(ld, d_size) for ld in lambda_ds]
             ).to(device)
 
             # FedEx core
