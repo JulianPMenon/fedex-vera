@@ -51,6 +51,7 @@ parser.add_argument('--init_weights', type=bool, default=True, help='Init weight
 parser.add_argument('--layers_to_transform', type=str, default=None, help='Layers to transform for VeRA')
 parser.add_argument('--layers_pattern', type=str, default=None, help='Layers pattern for VeRA')
 parser.add_argument("--rslora", action="store_true", help="Use RSLoRA")
+parser.add_argument("--sorf_seed", type=int, default=42, help="Seed for SORF matrix D1/D2/D3")
 parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
 parser.add_argument(
     "--agg_type", type=str, default="ours", help="Type of aggregation"
@@ -111,8 +112,22 @@ def _is_vera_lambda_key(key):
     return "vera_lambda_b" in key or "vera_lambda_d" in key
 
 
+def _is_sorf_param_key(key):
+    return any(x in key for x in ("sorf_b_real", "sorf_b_imag", "sorf_d_scale", "sorf_d_angles"))
+
+
+def _is_sorf_d_key(key):
+    return "sorf_d_scale" in key or "sorf_d_angles" in key
+
+
 def _get_client_broadcast_state(model, args):
     state = model.state_dict()
+    if args.agg_type == "sorf_vera":
+        return {
+            k: v
+            for k, v in state.items()
+            if _is_sorf_param_key(k) or _is_base_weight_key(k) or _is_classifier_key(k)
+        }
     if getattr(args, "vera", False):
         return {
             k: v
@@ -123,6 +138,12 @@ def _get_client_broadcast_state(model, args):
 
 
 def _get_client_upload_state(state_dict, args):
+    if args.agg_type == "sorf_vera":
+        return {
+            k: v
+            for k, v in state_dict.items()
+            if _is_sorf_d_key(k) or _is_classifier_key(k)
+        }
     if getattr(args, "vera", False):
         return {
             k: v
@@ -159,6 +180,8 @@ def _train_client_worker(
 
         if args.agg_type == "ffa":
             client_model = create_peft_FFA_model(num_labels, args)
+        elif args.agg_type == "sorf_vera":
+            client_model = create_peft_sorf_vera_model(num_labels, args)
         else:
             client_model = create_peft_model(num_labels, args)
 
@@ -232,6 +255,8 @@ def federated_learning(task):
 
     if args.agg_type == "ffa":
         global_model = create_peft_FFA_model(num_labels, args)
+    elif args.agg_type == "sorf_vera":
+        global_model = create_peft_sorf_vera_model(num_labels, args)
     else:
         global_model = create_peft_model(num_labels, args)
     global_model.to(server_device)
@@ -242,13 +267,15 @@ def federated_learning(task):
         print("VeRA lambda key count:", len(vera_keys))
 
     client_models = []
-    if not use_parallel:
-        for i in range(args.num_clients):
-            if args.agg_type == "ffa":
-                client_model = create_peft_FFA_model(num_labels, args)
-            else:
-                client_model = create_peft_model(num_labels, args)
-            client_models.append(client_model)
+
+    for i in range(args.num_clients):
+        if args.agg_type == "ffa":
+            client_model = create_peft_FFA_model(num_labels, args)
+        elif args.agg_type == "sorf_vera":
+            client_model = create_peft_sorf_vera_model(num_labels, args)
+        else:
+            client_model = create_peft_model(num_labels, args)
+        client_models.append(client_model)
 
     for round in range(args.rounds):
         print(f"Round {round + 1}/{args.rounds}")
@@ -302,6 +329,8 @@ def federated_learning(task):
             for i in range(args.num_clients):
                 if args.agg_type == "ffa":
                     client_model = create_peft_FFA_model(num_labels, args)
+                elif args.agg_type == "sorf_vera":
+                    client_model = create_peft_sorf_vera_model(num_labels, args)
                 else:
                     client_model = create_peft_model(num_labels, args)
                 state_path = client_state_map[i]
@@ -328,6 +357,8 @@ def federated_learning(task):
             global_model = aggregate_models_ours(global_model, client_models, args)
         elif args.agg_type == "ours_vera":
             global_model = aggregate_models_ours_vera_fedex(global_model, client_models, args)
+        elif args.agg_type == "sorf_vera":
+            global_model = aggregate_models_sorf_vera(global_model, client_models, args)
         elif args.agg_type == "ffa":
             global_model = aggregate_models_ffa(global_model, client_models)
 

@@ -1,0 +1,215 @@
+\documentclass[12pt]{article}
+
+% Mathematical packages
+\usepackage{amsmath}    % Advanced math typesetting
+\usepackage{amsthm}     % Theorem environments
+\usepackage{amssymb}    % Mathematical symbols
+\usepackage{bm}         % For bold math symbols
+
+% Theorem environments
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{corollary}{Corollary}
+
+\title{Mathematical Proof Template}
+\author{Your Name}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+This proof regards the application of federated learning principles to VeRA (Vector-based Random Matrix Adaptation).
+
+\section{Basics}
+Before the proof can be presented, we need to establish some basic definitions and notations.
+
+\subsection{FedEx-LoRA}
+FedEx-LoRA is a federated learning approach that combines the principles of LoRA with federated learning. In this setup, multiple clients collaboratively train a shared model while keeping their data localized. The contribution of FedEx-LoRA lies in its aggregation strategy for the low-rank matrices $A \in \mathbb{R}^{r \times m}$ and $B \in \mathbb{R}^{n \times r}$ across $k$ clients. 
+
+\subsubsection{The Problem}
+The problem is that matrix multiplication is not commutative, i.e., in general, $A \cdot B \neq B \cdot A$. In the federated setting, only transmitting $A$ and $B$ separately to the server and aggregating them there introduces an error. Representing the average over $k$ clients as an expectation:
+\[
+\mathbb{E}_{i \in \{1, \dots, k\}} [B_i] \cdot \mathbb{E}_{i \in \{1, \dots, k\}} [A_i] \neq \mathbb{E}_{i \in \{1, \dots, k\}} [B_i \cdot A_i]
+\]
+This would make it necessary to transmit the full $\Delta W_i$ from each client to the server, negating the communication efficiency of LoRA.
+
+\subsubsection{The Approach}
+The approach of FedEx-LoRA is to compute a residual error matrix $\Delta W_{\text{res}}$ that corrects for the error introduced by the non-commutativity of matrix multiplication. This residual is computed as follows:
+\[
+\Delta W_{\text{res}} = \mathbb{E}_{i \in \{1, \dots, k\}} [B_i \cdot A_i] - \mathbb{E}_{i \in \{1, \dots, k\}} [B_i] \cdot \mathbb{E}_{i \in \{1, \dots, k\}} [A_i]
+\]
+This residual matrix is of rank $k \cdot r$ and untrainable. While unusable in a hyperclient setting, it can be approximated by a low-rank matrix using techniques such as Singular Value Decomposition (SVD).
+
+\subsection{FedSVD}
+FedSVD is a method to improve privacy in federated learning. It mitigates reconstruction attacks by only transmitting the $B$ matrix and reinitializing $A$ on the server side using SVD.
+
+\begin{enumerate}
+    \item The server starts with $A$ and $B$ matrices.
+    \item The server computes the Singular Value Decomposition:
+        \begin{equation*}
+        U \cdot \Sigma \cdot V^T = \text{SVD}(B \cdot A)
+        \end{equation*}
+    \item The server reinitializes the $A$ and $B$ matrices as:
+        \begin{align*}
+        A &= V^T \\
+        B &= U \cdot \Sigma
+        \end{align*}
+    \item The server transmits the reinitialized $A$ and $B$ matrices to the clients.
+    \item The clients perform their training only on the $B$ matrix and keep $A$ frozen.
+    \item The clients transmit only the updated $B$ matrix back to the server.
+    \item The server aggregates the received $B$ matrices: $B_{\text{agg}} = \mathbb{E}_{i \in \{1, \dots, k\}} [B_i]$.
+\end{enumerate}
+
+\subsection{VeRA}
+VeRA utilizes frozen random matrices $A \in \mathbb{R}^{r \times n}$ and $B \in \mathbb{R}^{m \times r}$ adapted by trainable vectors $b \in \mathbb{R}^{m}$ and $d \in \mathbb{R}^{r}$. The adaptation is expressed via diagonal matrices $\Lambda_b = \text{diag}(b)$ and $\Lambda_d = \text{diag}(d)$. $\alpha\in\mathbb{R}$ is the scaling factor from LoRA. The forward pass is:
+\begin{align*}
+    h &= W_0 \cdot x + \alpha \cdot \Delta W \cdot x \\
+      &= W_0 \cdot x + \alpha \cdot \Lambda_b \cdot B \cdot \Lambda_d \cdot A \cdot x \\
+      &= W_0 \cdot x + \alpha \cdot \text{diag}(b) \cdot B \cdot \text{diag}(d) \cdot A \cdot x
+\end{align*}
+
+\section{Adapting VeRA to Federated Learning}
+The challenge in federated VeRA is aggregating the vectors $b_i$ and $d_i$ from $k$ clients such that the global model correctly computes $\Delta W$.
+\subsection{Naive aggregation proof}
+Even though VeRA is vector-based instead of matrix-based, it faces the same issue which FedEx-LoRA solves. We prove this by contradiction.
+\begin{theorem}
+In general, the average of the product of adaptive diagonal matrices in VeRA is not equal to the product of their averages. Specifically:
+\[
+\frac{1}{k} \sum_{i=1}^k (\Lambda_{b,i} B \Lambda_{d,i} A) \neq \left( \frac{1}{k} \sum_{i=1}^k \Lambda_{b,i} \right) B \left( \frac{1}{k} \sum_{i=1}^k \Lambda_{d,i} \right) A
+\]
+\end{theorem}
+
+\begin{proof}
+Consider a simplified case with $k=2$ clients and $2 \times 2$ matrices where $A = B = I$ (the Identity matrix). Let the diagonal adaptive matrices for each client be defined by the following "correlated" activations:
+
+For client $i=1$:
+\[
+\Lambda_{b,1} = \begin{pmatrix} 1 & 0 \\ 0 & 0 \end{pmatrix}, \quad \Lambda_{d,1} = \begin{pmatrix} 1 & 0 \\ 0 & 0 \end{pmatrix}
+\]
+For client $i=2$:
+\[
+\Lambda_{b,2} = \begin{pmatrix} 0 & 0 \\ 0 & 1 \end{pmatrix}, \quad \Lambda_{d,2} = \begin{pmatrix} 0 & 0 \\ 0 & 1 \end{pmatrix}
+\]
+
+First, we compute the Left Hand Side (LHS), representing the true average of the weight updates:
+\[
+\text{LHS} = \frac{1}{2} \sum_{i=1}^2 (\Lambda_{b,i} I \Lambda_{d,i} I) = \frac{1}{2} \left[ \begin{pmatrix} 1 & 0 \\ 0 & 0 \end{pmatrix} + \begin{pmatrix} 0 & 0 \\ 0 & 1 \end{pmatrix} \right] = \begin{pmatrix} 0.5 & 0 \\ 0 & 0.5 \end{pmatrix}
+\]
+
+Next, we compute the Right Hand Side (RHS), representing the naive aggregation of vectors $b$ and $d$:
+\[
+\mathbb{E}[\Lambda_b] = \frac{1}{2} \left[ \begin{pmatrix} 1 & 0 \\ 0 & 0 \end{pmatrix} + \begin{pmatrix} 0 & 0 \\ 0 & 1 \end{pmatrix} \right] = \begin{pmatrix} 0.5 & 0 \\ 0 & 0.5 \end{pmatrix}, \quad \mathbb{E}[\Lambda_d] = \begin{pmatrix} 0.5 & 0 \\ 0 & 0.5 \end{pmatrix}
+\]
+Remember that in this proof $A=B=I$. The product of these averages is:
+\[
+\text{RHS} = \mathbb{E}[\Lambda_b] I \mathbb{E}[\Lambda_d] I = \begin{pmatrix} 0.5 & 0 \\ 0 & 0.5 \end{pmatrix} \begin{pmatrix} 0.5 & 0 \\ 0 & 0.5 \end{pmatrix} = \begin{pmatrix} 0.25 & 0 \\ 0 & 0.25 \end{pmatrix}
+\]
+
+Since $\text{LHS} \neq \text{RHS}$, the formula is contradicted.
+\end{proof}
+Using the naive aggregation as a baseline measure could still prove useful.
+\subsection{Naive FedVeRA}
+An alternative approach is applying VeRA to FedSVD. This approach could look something like this:
+\begin{enumerate}
+    \item The server starts with $b$, $d$ and the seed.
+    \item The server uses the seed to sample $A$ and $B$ and calculates the inverse values of both matrices once
+    \item The server computes the Singular Value Decomposition:
+    \begin{equation*}
+        U\cdot\Sigma\cdot V^T = \text{SVD}(\Lambda_b \cdot B\cdot\Lambda_d\cdot A)
+    \end{equation*}
+    \item The server reinitializes the vector $d$
+    \begin{align*}
+        \Lambda_d\cdot A &= V^T\\
+        A \cdot V &= \Lambda_d^{-1} = \text{diag}(1/d)
+    \end{align*}
+    Similarly, vector $b$ is also reinitialized:
+    \begin{align*}
+        \Lambda_b\cdot B&= U\cdot\Sigma\\
+        B \cdot \Sigma^{-1} \cdot U^T &= \Lambda_b^{-1} = \text{diag}(1/b)
+    \end{align*}
+\end{enumerate}
+At this point, we hit a wall. $V^T$ and $U$ are rotation matrices (orthonormal). This means, it is impossible to solve for $d$ and $b$ because their corresponding matrices $\Lambda_d$ and $\Lambda_b$ have to be diagonal. $A$ and $B$ are initialized randomly which means they contain some random rotation. There is no way to solve for $\Lambda_d$ and $\Lambda_b$ in such a way that they are diagonal.
+\subsubsection{Naive rotational basis}
+Instead of simply diagonalising $d$ and $b$ another approach is to use the elements of the vectors as a rotational basis. For a three dimensional rank space, the elements of $d$ would be the magnitude of the vector $m$ along with the angles $\theta_1$ and $\theta_2$ to define the rotation along the cordial axes.
+\begin{align*}
+    d &= (m, \theta_1, \theta_2)\\
+    \Lambda_d &= R_x(\theta_1) \cdot R_y(\theta_2) \cdot \text{diag}(\sqrt[3]{m})\\
+    R_x(\theta) &= \begin{pmatrix}1 & 0 & 0 \\ 0 & \cos\theta & -\sin\theta \\ 0 & \sin\theta & \cos\theta \end{pmatrix}\\
+    R_y(\theta) &= \begin{pmatrix}\cos\theta & 0 & \sin\theta \\ 0 & 1 & 0 \\ -\sin\theta & 0 & \cos\theta \end{pmatrix}
+\end{align*}
+This way, the server could solve for $m$, $\theta_1$ and $\theta_2$ instead of the diagonal elements of $\Lambda_d$. The same could be done for vector $b$.
+
+This approach allows to solve for $V \cdot A$ and $U^T \cdot \Sigma^{-1} \cdot B$. This would also avoid the need to transmit a dense matrix to the clients since only the rotational basis vectors need to be transmitted. This approach works well for small rank sizes but becomes infeasible for larger ranks due to the quadratic growth of the number of angles needed to define the rotation in higher dimensions. To be exact the number of cordial rotations for a space of dimension $r$ is given by:
+\[\text{num\_rotations} = \frac{r \cdot (r-1)}{2}\]
+
+\subsubsection{SORF mixing matrix (Yu et al., 2016)}
+Let $r \in \mathbb{N}$. Let $H_r \in \mathbb{R}^{r\times r}$ be the normalized Walsh--Hadamard matrix ($H_r H_r^T = I_r$). Let $D_1,D_2,D_3 \in \mathbb{R}^{r\times r}$ be diagonal sign matrices with entries in $\{-1,+1\}$ sampled from a shared seed. We define the SORF mixer
+\[
+S_r := D_1 H_r D_2 H_r D_3 \in \mathbb{R}^{r\times r}.
+\]
+Since it is a product of orthonormal matrices, $S_r$ is orthonormal.
+
+\subsubsection{Complex vectors as trainable rotation + scaling}
+To make $d$ and $b$ capable of representing rotation (not only scaling), we extend the rank space from $\mathbb{R}^{r}$ to $\mathbb{R}^{2r}$ by identifying it with $\mathbb{C}^r$.
+
+Let
+\[
+d = (d_1,\dots,d_r) \in \mathbb{C}^{r}, \qquad d_j = a_j + i c_j.
+\]
+We embed each complex number into a real $2\times 2$ rotation-scaling block
+\[
+\Phi(d_j) :=
+\begin{pmatrix}
+a_j & -c_j\\
+c_j & a_j
+\end{pmatrix}.
+\]
+This matrix can be written as
+\[
+\Phi(d_j) = \rho_j \, R(\theta_j),
+\qquad
+\rho_j = |d_j|=\sqrt{a_j^2+c_j^2},
+\qquad
+\theta_j = \arg(d_j)=\mathrm{atan2}(c_j,a_j),
+\]
+where $R(\theta)$ is the standard 2D rotation matrix. Hence, the real part of $d_j$ controls scaling and the imaginary part controls rotation.
+
+We define the block-diagonal embedding
+\[
+\Gamma(d) := \mathrm{blkdiag}\big(\Phi(d_1),\dots,\Phi(d_r)\big) \in \mathbb{R}^{2r\times 2r}.
+\]
+The same goes for vector $b$. While $\Gamma(d)$ only rotates within its local $2\times 2$ blocks, the fixed orthonormal mixer $S$ redistributes energy across rank coordinates. Therefore, optimizing the angles $\theta_j$ yields non-trivial rotations in the original (unmixed) rank basis.
+
+As a geometric intuition, with $b$ and $d$ we rotate within 2 dimensional hyperplanes. You can imagine them as disks. Then we apply the SORF mixer make the 2 dimensional rotations interact in non-trivial ways.
+
+Finally, we use seeded frozen matrices $A$ and $B$ and define the SORF-VeRA update as
+\[
+\Delta W = S \cdot \Gamma(b) \cdot B \cdot S \cdot \Gamma(d) \cdot A
+\]
+
+\subsubsection{Server-side reinitialization of vectors}
+Now the server SVD equations
+\begin{align*}
+U\cdot\Sigma\cdot V^T &= \text{SVD}(S \cdot \Gamma(b_i) \cdot B \cdot S \cdot \Gamma(d_i) \cdot A)\\
+S \cdot \Gamma(d_{i+1}) \cdot A &= V^T\\
+S \cdot \Gamma(b_{i+1}) \cdot B &= U \cdot \Sigma
+\end{align*}
+can be approximately solved. Define the Frobeniusnorm for matrices as
+\begin{align*}
+\|M\|_F = \sqrt{\sum_{i,j} |M_{i,j}|^2}
+\end{align*}
+Then the server can solve for $d$ and $b$ by minimizing the following loss functions:
+\begin{align*}
+\mathcal{L}_{d_{i+1}} &= \|S \cdot \Gamma(d_{i+1}) \cdot A - V^T\|_F^2\\
+\mathcal{L}_{b_{i+1}} &= \|S \cdot \Gamma(b_{i+1}) \cdot B - U \cdot \Sigma\|_F^2
+\end{align*}
+The complex vectors are transmitted to the clients who perform their training only on the vector $d$ while keeping $b$ frozen. The clients transmit only the updated vector $d$ back to the server who aggregates the received vectors. Then the cycle continues.
+
+Alternatively, the SORF approach can be only used for vector $b$ because of its much bigger size while $d$ enjoys the full precision of the naive rotation basis. In this case, let $\Lambda_{d,\text{rot}} := m^{1/r} \cdot G(\bm{\theta}) \in \mathbb{R}^{r \times r}$ where $G(\bm{\theta})$ is the Givens rotation matrix from Section~1.3.1. The update becomes
+\[
+\Delta W = S \cdot \Gamma(b) \cdot B \cdot \Lambda_{d,\text{rot}} \cdot A
+\]
+\end{document}
