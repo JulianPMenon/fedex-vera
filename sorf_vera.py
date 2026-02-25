@@ -352,11 +352,20 @@ def fit_d(A, V_r, r):
     P, D_vals, QT = torch.linalg.svd(Lambda_target)
     # P: (r,r), D_vals: (r,), QT: (r,r)
 
-    # Nearest orthogonal matrix (polar factor)
+    # Procrustes correction: G(angles) can only represent proper rotations
+    # (det = +1).  If det(P @ QT) = -1, flip the last column of P (smallest
+    # singular value) so O becomes a proper rotation.  Out-of-place ops
+    # preserve autograd flow.
+    if torch.det(P @ QT) < 0:
+        sign_flip = torch.ones(r, device=device, dtype=dtype)
+        sign_flip[-1] = -1
+        P = P * sign_flip.unsqueeze(0)       # flip last column of P
+        D_vals = D_vals * sign_flip           # negate last singular value
+
+    # Nearest proper rotation (polar factor, now guaranteed det = +1)
     O = P @ QT
 
-    # Decompose O into Givens angles (residual diag_signs are discarded
-    # because we use a single uniform scale instead of per-axis values)
+    # Decompose O into Givens angles
     angles_new, _diag_signs = decompose_orthogonal_to_givens(O, r)
 
     # Single magnitude: mean of singular values (Frobenius-optimal uniform scale)
