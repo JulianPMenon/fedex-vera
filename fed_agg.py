@@ -1,7 +1,8 @@
-import torch
-import numpy as np
 import time
 from functools import wraps
+
+import numpy as np
+import torch
 from sorf_vera import fit_b, fit_d, build_lambda_d_rot, build_gamma
 
 def timer(func):
@@ -32,8 +33,6 @@ def aggregate_models_normal(global_model, client_models):
 
     global_state = global_model.state_dict()
     client_states = _get_state_dicts(client_models)
-    num_clients = len(client_models)
-
     for k in global_state.keys():
         if (
             "lora" in k
@@ -59,8 +58,6 @@ def aggregate_models_ffa(global_model, client_models):
 
     global_state = global_model.state_dict()
     client_states = _get_state_dicts(client_models)
-    num_clients = len(client_models)
-
     for k in global_state.keys():
         if (
             "lora_B" in k
@@ -238,8 +235,14 @@ def aggregate_models_ours_vera_fedex(global_model, client_models, args):
             global_state[lb_key] = lambda_b_avg
             global_state[ld_key] = lambda_d_avg
 
-            if getattr(args, "fedex", False):
-                global_state[base_key] += args.fedex_lr * residue
+            # Let experiments decide between FedEx-style scaling and lr scaling.
+            scaling = (
+                args.lora_alpha / np.sqrt(args.r)
+                if getattr(args, "rsvera", False)
+                else args.lora_alpha / args.r
+            ) if getattr(args, "vera_scale", False) else args.lr
+
+            global_state[base_key] += scaling * residue
 
     global_model.load_state_dict(global_state, strict=False)
     return global_model

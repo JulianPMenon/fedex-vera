@@ -1,34 +1,46 @@
-import torch
-from torch.utils.data import DataLoader
-from transformers import RobertaTokenizer, RobertaForSequenceClassification, AdamW
-from datasets import load_dataset
-from torch.utils.data import Dataset, DataLoader, Subset
-from transformers import (
-    GPT2Tokenizer,
-    GPT2LMHeadModel,
-    AdamW,
-    get_linear_schedule_with_warmup,
-)
-from tqdm import tqdm
 import numpy as np
-import pandas as pd
-from peft import get_peft_model, LoraConfig, TaskType, VeraConfig
+from datasets import load_dataset
+from torch.utils.data import DataLoader
+from transformers import GPT2Tokenizer, RobertaTokenizer
+
+
+_TASK_REMOVE_COLUMNS = {
+    "cola": ["sentence", "idx"],
+    "sst2": ["sentence", "idx"],
+    "mrpc": ["sentence1", "sentence2", "idx"],
+    "qqp": ["question1", "question2", "idx"],
+    "stsb": ["sentence1", "sentence2", "idx"],
+    "qnli": ["question", "sentence", "idx"],
+    "rte": ["sentence1", "sentence2", "idx"],
+    "wnli": ["sentence1", "sentence2", "idx"],
+    "mnli": ["premise", "hypothesis", "idx"],
+    "mnli_matched": ["premise", "hypothesis", "idx"],
+    "mnli_mismatched": ["premise", "hypothesis", "idx"],
+}
+
+_TASK_SPLITS = {
+    "cola": ("train", "validation", "test"),
+    "sst2": ("train", "validation", "test"),
+    "mrpc": ("train", "validation", "test"),
+    "qqp": ("train", "validation", "test"),
+    "stsb": ("train", "validation", "test"),
+    "qnli": ("train", "validation", "test"),
+    "rte": ("train", "validation", "test"),
+    "wnli": ("train", "validation", "test"),
+    "mnli": ("train", "validation_matched", "test_matched"),
+    "mnli_matched": ("train", "validation_matched", "test_matched"),
+    "mnli_mismatched": ("train", "validation_mismatched", "test_mismatched"),
+}
 
 
 def load_and_preprocess_data(task):
-
-    if "mnli" in task:
-        dataset = load_dataset("data/glue", "mnli")
-    else:
-        dataset = load_dataset("data/glue", task)
+    dataset = load_dataset("data/glue", "mnli" if "mnli" in task else task)
 
     tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
 
     def tokenize_function(examples):
-
-        # Handle different input formats
+        # Route by field names to avoid task-specific branching elsewhere.
         if "premise" in examples and "hypothesis" in examples:
-            # MNLI and similar tasks
             return tokenizer(
                 examples["premise"],
                 examples["hypothesis"],
@@ -36,8 +48,7 @@ def load_and_preprocess_data(task):
                 padding="max_length",
                 max_length=128,
             )
-        elif "question" in examples and "sentence" in examples:
-            # QNLI and similar tasks
+        if "question" in examples and "sentence" in examples:
             return tokenizer(
                 examples["question"],
                 examples["sentence"],
@@ -45,8 +56,7 @@ def load_and_preprocess_data(task):
                 padding="max_length",
                 max_length=128,
             )
-        elif "sentence1" in examples and "sentence2" in examples:
-            # MRPC, STS-B
+        if "sentence1" in examples and "sentence2" in examples:
             return tokenizer(
                 examples["sentence1"],
                 examples["sentence2"],
@@ -54,8 +64,7 @@ def load_and_preprocess_data(task):
                 padding="max_length",
                 max_length=128,
             )
-        elif "question1" in examples and "question2" in examples:
-            # QQP
+        if "question1" in examples and "question2" in examples:
             return tokenizer(
                 examples["question1"],
                 examples["question2"],
@@ -63,78 +72,31 @@ def load_and_preprocess_data(task):
                 padding="max_length",
                 max_length=128,
             )
-        elif "sentence" in examples:
-            # CoLA, SST-2
+        if "sentence" in examples:
             return tokenizer(
                 examples["sentence"],
                 truncation=True,
                 padding="max_length",
                 max_length=128,
             )
-        else:
-            raise ValueError(f"Unexpected format for task {task}")
+        raise ValueError(f"Unexpected format for task {task}")
 
+    # Normalize task-specific schemas to a single tokenized format.
     tokenized_datasets = dataset.map(tokenize_function, batched=True)
 
-    if task == "cola":
-        tokenized_datasets = tokenized_datasets.remove_columns(["sentence", "idx"])
-    elif task == "sst2":
-        tokenized_datasets = tokenized_datasets.remove_columns(["sentence", "idx"])
-    elif task == "mrpc":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["sentence1", "sentence2", "idx"]
-        )
-    elif task == "qqp":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["question1", "question2", "idx"]
-        )
-    elif task == "stsb":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["sentence1", "sentence2", "idx"]
-        )
-    elif task == "qnli":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["question", "sentence", "idx"]
-        )
-    elif task == "rte":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["sentence1", "sentence2", "idx"]
-        )
-    elif task == "wnli":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["sentence1", "sentence2", "idx"]
-        )
-    elif task == "mnli_matched" or task == "mnli_mismatched" or task == "mnli":
-        tokenized_datasets = tokenized_datasets.remove_columns(
-            ["premise", "hypothesis", "idx"]
-        )
-    else:
+    if task not in _TASK_REMOVE_COLUMNS:
         raise ValueError(f"Unexpected task {task}")
 
+    tokenized_datasets = tokenized_datasets.remove_columns(
+        _TASK_REMOVE_COLUMNS[task]
+    )
     tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
     tokenized_datasets.set_format("torch")
 
-    if (
-        task == "cola"
-        or task == "sst2"
-        or task == "mrpc"
-        or task == "qqp"
-        or task == "stsb"
-        or task == "qnli"
-        or task == "rte"
-        or task == "wnli"
-    ):
-        train_dataset = tokenized_datasets["train"]
-        val_dataset = tokenized_datasets["validation"]
-        test_dataset = tokenized_datasets["test"]
-    elif task == "mnli_matched":
-        train_dataset = tokenized_datasets["train"]
-        val_dataset = tokenized_datasets["validation_matched"]
-        test_dataset = tokenized_datasets["test_matched"]
-    elif task == "mnli_mismatched":
-        train_dataset = tokenized_datasets["train"]
-        val_dataset = tokenized_datasets["validation_mismatched"]
-        test_dataset = tokenized_datasets["test_mismatched"]
+    train_key, val_key, test_key = _TASK_SPLITS[task]
+    train_dataset = tokenized_datasets[train_key]
+    val_dataset = tokenized_datasets[val_key]
+    test_dataset = tokenized_datasets[test_key]
 
     return train_dataset, val_dataset, test_dataset
 
@@ -171,14 +133,12 @@ def create_e2e_data():
         inputs = examples["meaning_representation"]
         targets = examples["human_reference"]
 
-        # Combine the input-output pair into a single text
         model_inputs = [
             f"{input_} -> {target} <|endoftext|>"
             for input_, target in zip(inputs, targets)
         ]
         only_inputs = [f"{input_} ->" for input_, target in zip(inputs, targets)]
 
-        # Tokenize the combined inputs
         tokenized_inputs = tokenizer(
             model_inputs,
             max_length=512,
@@ -194,24 +154,18 @@ def create_e2e_data():
             return_tensors="pt",
         )
 
-        # Labels are the same as input_ids but shift them for next-token prediction
         tokenized_inputs["labels"] = tokenized_inputs["input_ids"].clone()
-
-        # Set the labels to -100 where attention mask is 0 (this will ignore padding in loss computation)
+        # Avoid loss on padding and prompt tokens to focus updates on targets.
         tokenized_inputs["labels"][tokenized_inputs["attention_mask"] == 0] = -100
-        # set the labels to -100 where meaning representation input ids are present
         tokenized_inputs["labels"][tokenized_only_inputs["attention_mask"] == 1] = -100
 
         return tokenized_inputs
 
     dataset = load_dataset("tuetschek/e2e_nlg")
-    from transformers import GPT2Tokenizer
 
-    # Load the GPT-2 tokenizer
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = (
-        tokenizer.eos_token
-    )  # GPT-2 doesn't have a pad token, so we set it to the eos token
+    tokenizer.pad_token = tokenizer.eos_token
+
     tokenized_datasets = dataset.map(preprocess_function, batched=True)
     return (
         tokenized_datasets["train"],

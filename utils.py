@@ -24,7 +24,7 @@ def save_dict_to_json(data_dict, args, base_path):
     # Ensure the directory exists
     os.makedirs(base_path, exist_ok=True)
 
-    # Combine data_dict and args
+    # Keep args alongside results for reproducibility.
     combined_dict = {"args": vars(args), "data": data_dict}
 
     # Convert tensors to lists

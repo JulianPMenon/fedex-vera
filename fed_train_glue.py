@@ -1,70 +1,64 @@
-import torch
-from torch.utils.data import DataLoader
-from transformers import (
-    RobertaTokenizer,
-    RobertaForSequenceClassification,
-    AdamW,
-    get_linear_schedule_with_warmup,
-)
-from datasets import load_dataset
-from tqdm import tqdm
-import numpy as np
-from peft import get_peft_model, LoraConfig, TaskType, VeraConfig
-from data_utils import *
-from models import *
 import argparse
-import warnings
 import os
-from datetime import datetime
-import numpy as np
-import wandb
-from train_eval import *
-from fed_agg import *
-import json
-from utils import *
-import torch.multiprocessing as mp
-import traceback
-import tempfile
 import shutil
+import tempfile
+import traceback
+
+import numpy as np
+import torch
+import torch.multiprocessing as mp
+from torch.utils.data import DataLoader
+
+from data_utils import create_client_dataloaders, create_dataloader, load_and_preprocess_data
+from fed_agg import (
+    aggregate_models_ffa,
+    aggregate_models_normal,
+    aggregate_models_ours,
+    aggregate_models_ours_vera_fedex,
+    aggregate_models_sorf_vera,
+)
+from models import (
+    create_peft_FFA_model,
+    create_peft_model,
+    create_peft_sorf_vera_model,
+)
+from train_eval import evaluate_global_model, train_client
 
 
 parser = argparse.ArgumentParser(description="Federated Learning with LoRA")
 
-parser.add_argument(
-    "--task", type=str, default="cola", help="GLUE task to fine-tune on"
-)
+parser.add_argument("--task", type=str, default="cola", help="GLUE task to fine-tune on")
 parser.add_argument("--model", type=str, default="roberta-base", help="Model name")
 parser.add_argument("--r", type=int, default=4, help="Rank for LoRA/VeRA (replaces lora_r)")
 parser.add_argument("--lora_alpha", type=int, default=8, help="LoRA/VeRA alpha value")
-parser.add_argument(
-    "--lora_dropout", type=float, default=0.1, help="LoRA dropout value"
-)
-parser.add_argument('--vera', action='store_true', help='Use VeRA adaptation')
-parser.add_argument('--d_initial', type=float, default=0.1, help='Initial value for d in VeRA')
-parser.add_argument('--vera_dropout', type=float, default=0.0, help='VeRA dropout value')
-parser.add_argument('--projection_prng_key', type=int, default=0, help='Projection PRNG key for VeRA')
-parser.add_argument('--save_projection', type=bool, default=True, help='Save projection in VeRA')
-parser.add_argument('--fan_in_fan_out', type=bool, default=False, help='Fan-in fan-out for VeRA')
-parser.add_argument('--bias', type=str, default='none', help='Bias type for VeRA')
-parser.add_argument('--modules_to_save', type=str, default=None, help='Modules to save for VeRA')
-parser.add_argument('--init_weights', type=bool, default=True, help='Init weights for VeRA')
-parser.add_argument('--layers_to_transform', type=str, default=None, help='Layers to transform for VeRA')
-parser.add_argument('--layers_pattern', type=str, default=None, help='Layers pattern for VeRA')
+parser.add_argument("--lora_dropout", type=float, default=0.1, help="LoRA dropout value")
+parser.add_argument("--vera", action="store_true", help="Use VeRA adaptation")
+parser.add_argument("--d_initial", type=float, default=0.1, help="Initial value for d in VeRA")
+parser.add_argument("--vera_dropout", type=float, default=0.0, help="VeRA dropout value")
+parser.add_argument("--projection_prng_key", type=int, default=0, help="Projection PRNG key for VeRA")
+parser.add_argument("--save_projection", type=bool, default=True, help="Save projection in VeRA")
+parser.add_argument("--fan_in_fan_out", type=bool, default=False, help="Fan-in fan-out for VeRA")
+parser.add_argument("--bias", type=str, default="none", help="Bias type for VeRA")
+parser.add_argument("--modules_to_save", type=str, default=None, help="Modules to save for VeRA")
+parser.add_argument("--init_weights", type=bool, default=True, help="Init weights for VeRA")
+parser.add_argument("--layers_to_transform", type=str, default=None, help="Layers to transform for VeRA")
+parser.add_argument("--layers_pattern", type=str, default=None, help="Layers pattern for VeRA")
 parser.add_argument("--rslora", action="store_true", help="Use RSLoRA")
+parser.add_argument("--rsvera", action="store_true", help="Use RSVeRA scaling")
 parser.add_argument("--sorf_seed", type=int, default=42, help="Seed for SORF matrix D1/D2/D3")
 parser.add_argument("--batch_size", type=int, default=128, help="Batch size")
+parser.add_argument("--agg_type", type=str, default="ours", help="Type of aggregation")
 parser.add_argument(
-    "--agg_type", type=str, default="ours", help="Type of aggregation"
+    "--vera_scale",
+    action="store_true",
+    default=False,
+    help="Scale VeRA residue by lr instead of alpha/r",
 )
 parser.add_argument("--num_clients", type=int, default=3, help="Number of clients")
 parser.add_argument("--rounds", type=int, default=50, help="Number of rounds")
-parser.add_argument(
-    "--local_epochs", type=int, default=3, help="Number of local epochs"
-)
+parser.add_argument("--local_epochs", type=int, default=3, help="Number of local epochs")
 parser.add_argument("--warmup_ratio", type=float, default=0.06, help="Warmup ratio")
-parser.add_argument(
-    "--max_seq_length", type=int, default=512, help="Maximum sequence length"
-)
+parser.add_argument("--max_seq_length", type=int, default=512, help="Maximum sequence length")
 parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
 parser.add_argument("--seed", type=int, default=42, help="Random seed")
 parser.add_argument(
@@ -72,12 +66,7 @@ parser.add_argument(
     action="store_true",
     help="Train clients in parallel with multiprocessing",
 )
-parser.add_argument(
-    "--server_gpu",
-    type=int,
-    default=0,
-    help="GPU id for server aggregation/evaluation",
-)
+parser.add_argument("--server_gpu", type=int, default=0, help="GPU id for server")
 parser.add_argument(
     "--client_gpus",
     type=str,
@@ -86,8 +75,6 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
-
-#wandb.init(project="project_name", config=args)
 
 np.random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -113,7 +100,9 @@ def _is_vera_lambda_key(key):
 
 
 def _is_sorf_param_key(key):
-    return any(x in key for x in ("sorf_b_real", "sorf_b_imag", "sorf_d_scale", "sorf_d_angles"))
+    return any(
+        x in key for x in ("sorf_b_real", "sorf_b_imag", "sorf_d_scale", "sorf_d_angles")
+    )
 
 
 def _is_sorf_d_key(key):
@@ -123,6 +112,7 @@ def _is_sorf_d_key(key):
 def _get_client_broadcast_state(model, args):
     state = model.state_dict()
     if args.agg_type == "sorf_vera":
+        # Shrink IPC payload by sharing only what clients need.
         return {
             k: v
             for k, v in state.items()
@@ -154,18 +144,16 @@ def _get_client_upload_state(state_dict, args):
 
 
 def _get_tmp_dir():
-    return (
-        os.environ.get("SLURM_TMPDIR")
-        or os.environ.get("TMPDIR")
-        or "/tmp"
-    )
+    # Prefer cluster scratch for large temporary artifacts.
+    return os.environ.get("SLURM_TMPDIR") or os.environ.get("TMPDIR") or "/tmp"
 
 
 def _train_client_worker(
     client_id,
     gpu_id,
-    model_state_dict,
-    client_data,
+    model_state_dict_path,
+    client_indices,
+    train_data,
     args,
     num_labels,
     return_queue,
@@ -185,13 +173,18 @@ def _train_client_worker(
         else:
             client_model = create_peft_model(num_labels, args)
 
-        client_model.load_state_dict(model_state_dict, strict=False)
-        client_loader = DataLoader(
-            client_data, batch_size=args.batch_size, shuffle=True
+        model_state_dict = torch.load(
+            model_state_dict_path, map_location="cpu", weights_only=True
         )
+        client_model.load_state_dict(model_state_dict, strict=False)
+
+        client_data = train_data.select(client_indices)
+        client_loader = DataLoader(client_data, batch_size=args.batch_size, shuffle=True)
+
         client_state = train_client(client_model, client_loader, args, device=device)
         upload_state = _get_client_upload_state(client_state, args)
         cpu_state = {k: v.detach().cpu() for k, v in upload_state.items()}
+
         tmp_path = f"{save_path}.tmp"
         torch.save(cpu_state, tmp_path, _use_new_zipfile_serialization=False)
         os.replace(tmp_path, save_path)
@@ -208,12 +201,11 @@ def _train_client_worker(
             }
         )
 
-def federated_learning(task):
 
+def federated_learning(task):
     train_data, val_data, test_data = load_and_preprocess_data(task)
 
     num_labels = len(set(train_data["labels"]))
-
     if args.task == "stsb":
         num_labels = 1
 
@@ -236,9 +228,9 @@ def federated_learning(task):
             )
         if args.server_gpu in client_gpu_ids:
             print("Warning: server GPU also used for client training.")
-        client_datasets = create_client_datasets(train_data, args)
     else:
         client_dataloaders = create_client_dataloaders(train_data, args)
+
     val_dataloader = create_dataloader(val_data, args)
     test_dataloader = create_dataloader(test_data, args)
 
@@ -267,21 +259,31 @@ def federated_learning(task):
         print("VeRA lambda key count:", len(vera_keys))
 
     client_models = []
-
-    for i in range(args.num_clients):
-        if args.agg_type == "ffa":
-            client_model = create_peft_FFA_model(num_labels, args)
-        elif args.agg_type == "sorf_vera":
-            client_model = create_peft_sorf_vera_model(num_labels, args)
-        else:
-            client_model = create_peft_model(num_labels, args)
-        client_models.append(client_model)
+    if not use_parallel:
+        for _i in range(args.num_clients):
+            if args.agg_type == "ffa":
+                client_model = create_peft_FFA_model(num_labels, args)
+            elif args.agg_type == "sorf_vera":
+                client_model = create_peft_sorf_vera_model(num_labels, args)
+            else:
+                client_model = create_peft_model(num_labels, args)
+            client_models.append(client_model)
 
     for round in range(args.rounds):
         print(f"Round {round + 1}/{args.rounds}")
 
-        client_model_state_dicts = []
         if use_parallel:
+            client_indices_list = []
+            start_idx = 0
+            client_size = len(train_data) // args.num_clients
+            for i in range(args.num_clients):
+                if i == args.num_clients - 1:
+                    end_idx = len(train_data)
+                else:
+                    end_idx = start_idx + client_size
+                client_indices_list.append(list(range(start_idx, end_idx)))
+                start_idx = end_idx
+
             broadcast_state = _get_client_broadcast_state(global_model, args)
             global_state_cpu = {k: v.detach().cpu() for k, v in broadcast_state.items()}
             return_queue = mp.Queue()
@@ -290,6 +292,11 @@ def federated_learning(task):
                 prefix=f"fed_clients_round_{round + 1}_",
                 dir=_get_tmp_dir(),
             )
+
+            # Use a shared file to avoid sending tensors over IPC.
+            global_state_path = os.path.join(round_dir, "global_state.pt")
+            torch.save(global_state_cpu, global_state_path, _use_new_zipfile_serialization=False)
+
             for i in range(args.num_clients):
                 save_path = os.path.join(round_dir, f"client_{i}.pt")
                 p = mp.Process(
@@ -297,8 +304,9 @@ def federated_learning(task):
                     args=(
                         i,
                         client_gpu_ids[i],
-                        global_state_cpu,
-                        client_datasets[i],
+                        global_state_path,
+                        client_indices_list[i],
+                        train_data,
                         args,
                         num_labels,
                         return_queue,
@@ -344,10 +352,7 @@ def federated_learning(task):
                 client_model = client_models[i]
                 broadcast_state = _get_client_broadcast_state(global_model, args)
                 client_model.load_state_dict(broadcast_state, strict=False)
-                client_model_state_dict = train_client(
-                    client_model, client_dataloaders[i], args, device=server_device
-                )
-                client_model_state_dicts.append(client_model_state_dict)
+                train_client(client_model, client_dataloaders[i], args, device=server_device)
             for client_model in client_models:
                 client_model.to(server_device)
 
@@ -356,13 +361,14 @@ def federated_learning(task):
         elif args.agg_type == "ours":
             global_model = aggregate_models_ours(global_model, client_models, args)
         elif args.agg_type == "ours_vera":
-            global_model = aggregate_models_ours_vera_fedex(global_model, client_models, args)
+            global_model = aggregate_models_ours_vera_fedex(
+                global_model, client_models, args
+            )
         elif args.agg_type == "sorf_vera":
             global_model = aggregate_models_sorf_vera(global_model, client_models, args)
         elif args.agg_type == "ffa":
             global_model = aggregate_models_ffa(global_model, client_models)
 
-        
         if round == args.rounds - 1:
             print("Testing final global model")
             max_metric_1, max_metric_2 = evaluate_global_model(
@@ -384,8 +390,6 @@ def federated_learning(task):
             )
 
 
-
-# Main execution
 if __name__ == "__main__":
     if args.parallel_clients:
         try:

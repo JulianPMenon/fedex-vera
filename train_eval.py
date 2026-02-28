@@ -1,45 +1,13 @@
-import torch
-from torch.utils.data import DataLoader
-from transformers import (
-    RobertaTokenizer,
-    RobertaForSequenceClassification,
-    AdamW,
-    get_linear_schedule_with_warmup,
-)
-from datasets import load_dataset
-from tqdm import tqdm
-import numpy as np
-from peft import get_peft_model, LoraConfig, TaskType
-from data_utils import *
-from models import *
-import argparse
-import warnings
-from sklearn.metrics import matthews_corrcoef
-import numpy as np
-import wandb
-from torch.cuda.amp import GradScaler, autocast
-from sklearn.metrics import matthews_corrcoef, f1_score, accuracy_score
-from scipy.stats import pearsonr, spearmanr
-import numpy as np
-from opacus import PrivacyEngine
-from opacus.validators.module_validator import ModuleValidator
-import torch
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-from nltk.translate.bleu_score import corpus_bleu
-from nltk.translate.nist_score import corpus_nist
-from nltk.translate.meteor_score import meteor_score
-from rouge_score import rouge_scorer
-from pycocoevalcap.cider.cider import Cider
-import torch
-from datasets import load_dataset
-from transformers import get_linear_schedule_with_warmup
-from transformers import GPT2LMHeadModel
-from peft import get_peft_model, LoraConfig, TaskType
-from transformers import Trainer, TrainingArguments
-from data_utils import *
 import os
-from copy import deepcopy
+
+import torch
+from scipy.stats import pearsonr, spearmanr
+from sklearn.metrics import accuracy_score, f1_score, matthews_corrcoef
+from torch.cuda.amp import GradScaler, autocast
+from tqdm import tqdm
+from transformers import Trainer, TrainingArguments, get_linear_schedule_with_warmup
+
+from data_utils import create_dataloader
 
 
 def train_client(model, dataloader, args, device=None):
@@ -59,17 +27,15 @@ def train_client(model, dataloader, args, device=None):
     use_amp = device.type == "cuda"
     scaler = GradScaler(enabled=use_amp)
     model.train()
-    for epoch in range(args.local_epochs):
-
-        for step, data in enumerate(tqdm(dataloader)):
+    for _epoch in range(args.local_epochs):
+        for _step, data in enumerate(tqdm(dataloader)):
             data = {k: v.to(device) for k, v in data.items()}
 
             with autocast(enabled=use_amp):
                 outputs = model(**data)
                 loss = outputs.loss
 
-            #wandb.log({"client_loss": loss.detach().cpu().numpy()})
-
+            # AMP keeps GPU memory stable on long sequences.
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
@@ -84,25 +50,24 @@ def calculate_metrics(all_true_labels, all_predictions, task):
         return accuracy_score(all_true_labels, all_predictions), matthews_corrcoef(
             all_true_labels, all_predictions
         )
-    elif task in ["sst2", "qnli", "rte", "wnli"]:
+    if task in ["sst2", "qnli", "rte", "wnli"]:
         return accuracy_score(all_true_labels, all_predictions), None
-    elif task == "mrpc":
+    if task == "mrpc":
         return f1_score(all_true_labels, all_predictions), accuracy_score(
             all_true_labels, all_predictions
         )
-    elif task == "stsb":
+    if task == "stsb":
         return (
             pearsonr(all_true_labels, all_predictions)[0],
             spearmanr(all_true_labels, all_predictions)[0],
         )
-    elif task == "qqp":
+    if task == "qqp":
         return accuracy_score(all_true_labels, all_predictions), f1_score(
             all_true_labels, all_predictions
         )
-    elif task in ["mnli_matched", "mnli_mismatched"]:
+    if task in ["mnli_matched", "mnli_mismatched", "mnli"]:
         return accuracy_score(all_true_labels, all_predictions), None
-    else:
-        raise ValueError(f"Unknown task: {task}")
+    raise ValueError(f"Unknown task: {task}")
 
 
 def evaluate_global_model(
@@ -131,7 +96,6 @@ def evaluate_global_model(
         else:
             model_inputs = batch
         with torch.no_grad():
-
             outputs = global_model(**model_inputs)
 
             if labels is not None and not has_invalid_labels and outputs.loss is not None:
@@ -155,7 +119,6 @@ def evaluate_global_model(
         )
         return max_metric1, max_metric2
 
-    # Calculate the metrics for the specific task
     metric1, metric2 = calculate_metrics(all_true_labels, all_predictions, args.task)
 
     if metric1 > max_metric1:
@@ -171,16 +134,6 @@ def evaluate_global_model(
     if max_metric2 is not None:
         print(f"{args.task} - Max Metric 2: {max_metric2:.4f}")
 
-    # wandb.log(
-    #     {
-    #         f"eval_loss": eval_loss,
-    #         f"metric1": metric1,
-    #         f"metric2": metric2 if metric2 is not None else 0,
-    #         f"max_metric1": max_metric1,
-    #         f"max_metric2": max_metric2 if max_metric2 is not None else 0,
-    #     }
-    # )
-
     return max_metric1, max_metric2
 
 
@@ -193,33 +146,29 @@ def get_lr_scheduler(optimizer, num_warmup_steps, num_training_steps):
 
 
 def train_client_e2e(model, train_dataset, val_dataset, tokenizer, args):
-    num_epochs = args.local_epochs  # or whatever number of epochs you want
+    num_epochs = args.local_epochs
     per_device_train_batch_size = args.batch_size
     num_training_steps = len(train_dataset) * num_epochs // per_device_train_batch_size
-    num_warmup_steps = int(0.1 * num_training_steps)  # 10% of total steps for warmup
+    num_warmup_steps = int(0.1 * num_training_steps)
 
     optimizer = torch.optim.AdamW(model.parameters())
 
-    # Define training arguments
     training_args = TrainingArguments(
-        # Directory to save the model
         output_dir="./models_trained/gpt4/dump/models/gpt2-e2e-lora_gpt4",
         overwrite_output_dir=True,
-        logging_dir="./models_trained/gpt4/dump/logs/gpt2-e2e-lora_gpt4",  # Directory for logs
-        per_device_train_batch_size=args.batch_size,  # Adjust based on your GPU capacity
+        logging_dir="./models_trained/gpt4/dump/logs/gpt2-e2e-lora_gpt4",
+        per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
-        evaluation_strategy="epoch",  # Evaluate every epoch
+        evaluation_strategy="epoch",
         save_strategy="epoch",
-        num_train_epochs=num_epochs,  # Number of training epochs
-        learning_rate=args.lr,  # Learning rate for LoRA parameters
+        num_train_epochs=num_epochs,
+        learning_rate=args.lr,
         weight_decay=0.01,
         label_smoothing_factor=0.1,
-        #report_to="wandb",
         run_name="fed-lora",
-        logging_steps=100,  # Log every 100 steps
+        logging_steps=100,
     )
 
-    # Initialize the trainer
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -232,7 +181,6 @@ def train_client_e2e(model, train_dataset, val_dataset, tokenizer, args):
         ),
     )
 
-    # Train the model
     trainer.train()
     return model.state_dict()
 
@@ -243,28 +191,22 @@ def gen_and_save(model, dataloader, tokenizer, args):
     model.eval()
 
     all_predictions = []
-
     all_inputs = []
     with torch.no_grad():
-        for step, batch in enumerate(tqdm(dataloader)):
-
+        for _step, batch in enumerate(tqdm(dataloader)):
             inputs = {k: v.to(device) for k, v in batch.items()}
 
-            # Generate predictions (starting from after the MR)
             generated = model.generate(
-                input_ids=inputs["input_ids"],  # Input MR as prompt
+                input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                max_length=inputs["input_ids"].shape[1]
-                + 50,  # Allow space for generation after MR
+                max_length=inputs["input_ids"].shape[1] + 50,
                 num_return_sequences=1,
                 no_repeat_ngram_size=4,
                 do_sample=True,
                 num_beams=10,
                 penalty_alpha=0.9,
-                pad_token_id=tokenizer.eos_token_id,  # Ensure padding works correctly
+                pad_token_id=tokenizer.eos_token_id,
             )
-            # Decode the generated predictions, excluding the input MR tokens
-            # We slice the generated tokens to remove the input MR part
 
             input_seq = tokenizer.batch_decode(
                 inputs["input_ids"], skip_special_tokens=True
@@ -276,10 +218,9 @@ def gen_and_save(model, dataloader, tokenizer, args):
                 )
                 for i in range(generated.shape[0])
             ]
-            # Collect predictions and references
+
             all_inputs.extend(input_seq)
             all_predictions.extend(predictions)
-            # all_references.extend(references)
 
     return all_predictions, all_inputs
 
@@ -313,15 +254,12 @@ def process_lists(input_list, second_list, third_list):
 
 
 def evaluate_e2e_save_text(model, test_data, tokenizer, args):
-
     def preprocess_function2(examples):
         inputs = examples["meaning_representation"]
         targets = examples["human_reference"]
 
-        # Combine the input-output pair into a single text
         model_inputs = [f"{input_} ->" for input_, target in zip(inputs, targets)]
 
-        # Tokenize the combined inputs
         tokenized_inputs = tokenizer(
             model_inputs,
             max_length=512,
@@ -330,10 +268,7 @@ def evaluate_e2e_save_text(model, test_data, tokenizer, args):
             return_tensors="pt",
         )
 
-        # Labels are the same as input_ids but shift them for next-token prediction
         tokenized_inputs["labels"] = tokenized_inputs["input_ids"].clone()
-
-        # Set the labels to -100 where attention mask is 0 (this will ignore padding in loss computation)
         tokenized_inputs["labels"][tokenized_inputs["attention_mask"] == 0] = -100
 
         return tokenized_inputs
