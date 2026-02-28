@@ -6,7 +6,7 @@ This project implements federated fine-tuning for GLUE sequence classification u
 Original repository: https://github.com/CERT-Lab/fedex-lora
 
 Note: Experiments were designed for a Pascal GPU cluster and may need tuning for other hardware.
-
+      The scientific paper will be addet when the project is fully finished.
 ## Project Structure
 ```
 .
